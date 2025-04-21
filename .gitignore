@@ -1,0 +1,11 @@
+# Ignore Python cache and virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+
+# Ignore CSV datasets
+data/*.csv
+
+# OS-specific junk
+.DS_Store
+Thumbs.db
