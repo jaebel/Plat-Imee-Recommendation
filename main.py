@@ -11,6 +11,10 @@ from torch.utils.data import Dataset, DataLoader
 
 app = FastAPI()
 
+# Setup device (GPU if available, otherwise CPU)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
 class AnimeEntryDTO(BaseModel):
     malId: int = Field(..., alias="malId")
     rating: float = 7.0
@@ -56,21 +60,22 @@ class MatrixFactorizationModel(nn.Module):
         prediction = (user_embeds * anime_embeds).sum(dim=1) + user_bias + anime_bias
         return prediction
 
-def train_model(ratings_df: pd.DataFrame, num_epochs=10, batch_size=128, num_factors=30): # changed # reverted?
+def train_model(ratings_df: pd.DataFrame, num_epochs=10, batch_size=128, num_factors=30):
     dataset = AnimeRatingsDataset(ratings_df)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
     num_users = ratings_df['user_id'].nunique()
     num_anime = ratings_df['anime_id'].nunique()
 
-    model = MatrixFactorizationModel(num_users, num_anime, num_factors)
+    model = MatrixFactorizationModel(num_users, num_anime, num_factors).to(device)
     criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.003) # changed
+    optimizer = optim.Adam(model.parameters(), lr=0.003)
 
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0.0
         for users, anime, ratings in dataloader:
+            users, anime, ratings = users.to(device), anime.to(device), ratings.to(device)
             optimizer.zero_grad()
             predictions = model(users, anime)
             loss = criterion(predictions, ratings)
@@ -91,9 +96,9 @@ def compute_new_user_embedding(payload: UserAnimeListDTO, model) -> torch.Tensor
     if not valid_indices:
         raise HTTPException(status_code=404, detail="No valid anime in payload found in training data")
 
-    indices_tensor = torch.tensor(valid_indices, dtype=torch.long)
+    indices_tensor = torch.tensor(valid_indices, dtype=torch.long, device=device)
     item_embeddings = model.anime_embeddings.weight.data[indices_tensor]
-    weights_tensor = torch.tensor(ratings_list, dtype=torch.float32).unsqueeze(1)
+    weights_tensor = torch.tensor(ratings_list, dtype=torch.float32, device=device).unsqueeze(1)
     user_embedding = (item_embeddings * weights_tensor).sum(dim=0) / weights_tensor.sum()
     return user_embedding
 
@@ -104,17 +109,17 @@ def recommend_anime_for_user(user_id: int, payload: UserAnimeListDTO, top_n=10):
     if user_id in user_to_idx:
         user_idx = user_to_idx[user_id]
         num_anime = len(unique_anime_rev)
-        all_anime_indices = torch.arange(num_anime, dtype=torch.long)
-        user_tensor = torch.tensor([user_idx] * num_anime, dtype=torch.long)
+        all_anime_indices = torch.arange(num_anime, dtype=torch.long, device=device)
+        user_tensor = torch.tensor([user_idx] * num_anime, dtype=torch.long, device=device)
         model.eval()
         with torch.no_grad():
-            predictions = model(user_tensor, all_anime_indices).numpy()
+            predictions = model(user_tensor, all_anime_indices).cpu().numpy()
     else:
-        new_user_embedding = compute_new_user_embedding(payload, model)
+        new_user_embedding = compute_new_user_embedding(payload, model).to(device)
         all_item_embeddings = model.anime_embeddings.weight.data
         all_item_biases = model.anime_biases.weight.data.squeeze()
         predictions = (all_item_embeddings @ new_user_embedding) + all_item_biases
-        predictions = predictions.numpy()
+        predictions = predictions.cpu().numpy()
 
     user_anime_ids = {entry.malId for entry in payload.animeList}
 
@@ -132,7 +137,6 @@ def recommend_anime_for_user(user_id: int, payload: UserAnimeListDTO, top_n=10):
     rec_anime_ids = [unique_anime_rev[idx] for idx, _ in top_indices]
     return rec_anime_ids
 
-
 model = None
 ratings_df = None
 user_to_idx = {}
@@ -146,7 +150,7 @@ def startup_event():
     try:
         ratings_df = pd.read_csv("data/rating.csv")
         ratings_df = ratings_df.dropna(subset=['user_id', 'anime_id', 'rating'])
-        ratings_df = ratings_df[ratings_df['rating'] != -1]  # Exclude unrated
+        ratings_df = ratings_df[ratings_df['rating'] != -1]
         ratings_df['user_id'] = ratings_df['user_id'].astype(int)
         ratings_df['anime_id'] = ratings_df['anime_id'].astype(int)
 
@@ -170,15 +174,15 @@ def startup_event():
         for _, row in anime_df.iterrows():
             anime_genres[row['MAL_ID']] = row['Genres']
 
-        model = MatrixFactorizationModel(len(user_to_idx), len(anime_to_idx))
+        model = MatrixFactorizationModel(len(user_to_idx), len(anime_to_idx)).to(device)
 
         if os.path.exists("anime_recommender.pth"):
             print("Loading saved model...")
-            model.load_state_dict(torch.load("anime_recommender.pth"))
+            model.load_state_dict(torch.load("anime_recommender.pth", map_location=device))
             model.eval()
         else:
             print("Training model on startup...")
-            model = train_model(ratings_df, num_epochs=10) # reverted
+            model = train_model(ratings_df, num_epochs=10)
             torch.save(model.state_dict(), "anime_recommender.pth")
             print("Model training completed and saved.")
 
@@ -192,13 +196,7 @@ def get_recommendations(payload: UserAnimeListDTO):
         rec_anime_ids = recommend_anime_for_user(payload.userId, payload, top_n=10)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-    # user_anime_ids = {entry.malId for entry in payload.animeList}
-    # filtered_ids = [anime_id for anime_id in rec_anime_ids if anime_id not in user_anime_ids]
-    # return [RecResponseDTO(mal_id=anime_id) for anime_id in filtered_ids]
-
     return [RecResponseDTO(mal_id=anime_id) for anime_id in rec_anime_ids]
-
 
 if __name__ == "__main__":
     import uvicorn
