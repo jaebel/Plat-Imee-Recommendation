@@ -60,7 +60,7 @@ class MatrixFactorizationModel(nn.Module):
         prediction = (user_embeds * anime_embeds).sum(dim=1) + user_bias + anime_bias
         return prediction
 
-def train_model(ratings_df: pd.DataFrame, num_epochs=10, batch_size=128, num_factors=30):
+def train_model(ratings_df: pd.DataFrame, num_epochs=19, batch_size=128, num_factors=30, learning_rate=0.00098238482170162, weight_decay=1.7546484188145045e-06):
     dataset = AnimeRatingsDataset(ratings_df)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
@@ -69,7 +69,7 @@ def train_model(ratings_df: pd.DataFrame, num_epochs=10, batch_size=128, num_fac
 
     model = MatrixFactorizationModel(num_users, num_anime, num_factors).to(device)
     criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.003)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
     for epoch in range(num_epochs):
         model.train()
@@ -182,7 +182,13 @@ def startup_event():
             model.eval()
         else:
             print("Training model on startup...")
-            model = train_model(ratings_df, num_epochs=10)
+            model = train_model(
+                ratings_df,
+                num_epochs=19,
+                num_factors=30,
+                learning_rate=0.00098238482170162,
+                weight_decay=1.7546484188145045e-06
+            )
             torch.save(model.state_dict(), "anime_recommender.pth")
             print("Model training completed and saved.")
 

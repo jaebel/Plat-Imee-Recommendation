@@ -30,7 +30,7 @@ ratings_df["anime_id"] = ratings_df["anime_id"].map(anime_to_idx)
 
 # [New] Create train/val split and sample for speed
 train_df, val_df = train_test_split(ratings_df, test_size=0.2, random_state=42)
-train_df = train_df.sample(frac=0.2, random_state=42)  # speed-up trick
+# train_df = train_df.sample(frac=0.2, random_state=42)  # speed-up trick disabled for full training set
 
 # [Copied from main.py] Dataset class
 class AnimeRatingsDataset(Dataset):
@@ -54,6 +54,11 @@ class MatrixFactorizationModel(nn.Module):
         self.user_biases = nn.Embedding(num_users, 1)
         self.anime_biases = nn.Embedding(num_anime, 1)
 
+        nn.init.normal_(self.user_embeddings.weight, std=0.01)
+        nn.init.normal_(self.anime_embeddings.weight, std=0.01)
+        nn.init.zeros_(self.user_biases.weight)
+        nn.init.zeros_(self.anime_biases.weight)
+
     def forward(self, userIds, animeIds):
         user_embeds = self.user_embeddings(userIds)
         anime_embeds = self.anime_embeddings(animeIds)
@@ -74,15 +79,16 @@ def evaluate(model, val_df):
             preds = model(users, anime)
             loss = criterion(preds, ratings)
             total_loss += loss.item() * len(ratings)
-    return np.sqrt(total_loss / len(val_df))  # RMSE
+    return total_loss / len(val_df)  # MSE
 
 # [New] Tuning objective function
 
 def objective(trial):
-    num_factors = trial.suggest_int("num_factors", 20, 100, step=10)
-    lr = trial.suggest_float("learning_rate", 1e-4, 5e-3, log=True)
-    weight_decay = trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True)
-    num_epochs = trial.suggest_int("num_epochs", 5, 12)
+    # Expanded search space for better exploration
+    num_factors = trial.suggest_int("num_factors", 20, 120, step=10)  # was 20–100
+    lr = trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True)    # was 1e-4 to 5e-3
+    weight_decay = trial.suggest_float("weight_decay", 1e-6, 1e-4, log=True)
+    num_epochs = trial.suggest_int("num_epochs", 8, 20)  # was 5–12
 
     model = MatrixFactorizationModel(len(user_to_idx), len(anime_to_idx), num_factors).to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -91,7 +97,7 @@ def objective(trial):
     train_dataset = AnimeRatingsDataset(train_df)
     train_loader = DataLoader(train_dataset, batch_size=128, shuffle=True)
 
-    best_val_rmse = float("inf")
+    best_val_mse = float("inf")
     patience = 3
     num_bad_epochs = 0
 
@@ -105,11 +111,11 @@ def objective(trial):
             loss.backward()
             optimizer.step()
 
-        val_rmse = evaluate(model, val_df)
-        print(f"    [Trial {trial.number}] Epoch {epoch+1}/{num_epochs} - Val RMSE: {val_rmse:.4f}")
+        val_mse = evaluate(model, val_df)
+        print(f"    [Trial {trial.number}] Epoch {epoch+1}/{num_epochs} - Val MSE: {val_mse:.4f}")
 
-        if val_rmse < best_val_rmse:
-            best_val_rmse = val_rmse
+        if val_mse < best_val_mse:
+            best_val_mse = val_mse
             num_bad_epochs = 0
         else:
             num_bad_epochs += 1
@@ -117,7 +123,7 @@ def objective(trial):
                 print(f"    [Trial {trial.number}] Early stopping at epoch {epoch+1}")
                 break
 
-    return best_val_rmse
+    return best_val_mse
 
 # [New] Run Optuna Study
 study = optuna.create_study(direction="minimize")
@@ -125,8 +131,8 @@ study.optimize(objective, n_trials=30)
 
 # [New] Save best model and trial info
 best_trial = study.best_trial
-print("\n✅ Best trial:")
-print(f"  RMSE: {best_trial.value:.4f}")
+print("\n Best trial:")
+print(f"  MSE: {best_trial.value:.4f}")
 print(f"  Params: {best_trial.params}")
 
 # Save model with best config
@@ -151,6 +157,6 @@ torch.save(best_model.state_dict(), "best_model.pth")
 # Save trial results
 with open("optuna_trials.csv", "w", newline="") as f:
     writer = csv.writer(f)
-    writer.writerow(["trial", "rmse"] + list(best_trial.params.keys()))
+    writer.writerow(["trial", "mse"] + list(best_trial.params.keys()))
     for i, t in enumerate(study.trials):
         writer.writerow([i, t.value] + [t.params.get(k, None) for k in best_trial.params.keys()])
