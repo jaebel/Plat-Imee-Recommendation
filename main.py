@@ -158,7 +158,7 @@ def startup_event():
         with open("anime_genres.json") as f:
             anime_genres = json.load(f)
 
-        model = MatrixFactorizationModel(60690, 9927).to(device)
+        model = MatrixFactorizationModel(69600, 9927).to(device)
         model.load_state_dict(torch.load("anime_recommender.pth", map_location=device))
         model.eval()
 
