@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import List
 import os
+import json
 
 import pandas as pd
 import numpy as np
@@ -128,7 +129,7 @@ def recommend_anime_for_user(user_id: int, payload: UserAnimeListDTO, top_n=10):
         mal_id = unique_anime_rev[idx]
         if mal_id in user_anime_ids:
             continue
-        genres = anime_genres.get(mal_id, "").lower()
+        genres = anime_genres.get(str(mal_id), "").lower()
         if payload.safeSearch and ("hentai" in genres or "ecchi" in genres):
             continue
         filtered.append((idx, score))
@@ -138,7 +139,6 @@ def recommend_anime_for_user(user_id: int, payload: UserAnimeListDTO, top_n=10):
     return rec_anime_ids
 
 model = None
-ratings_df = None
 user_to_idx = {}
 anime_to_idx = {}
 unique_anime_rev = None
@@ -146,54 +146,24 @@ anime_genres = {}
 
 @app.on_event("startup")
 def startup_event():
-    global model, ratings_df, user_to_idx, anime_to_idx, unique_anime_rev, anime_genres
+    global model, anime_to_idx, unique_anime_rev, anime_genres
+
     try:
-        ratings_df = pd.read_csv("data/rating.csv")
-        ratings_df = ratings_df.dropna(subset=['user_id', 'anime_id', 'rating'])
-        ratings_df = ratings_df[ratings_df['rating'] != -1]
-        ratings_df['user_id'] = ratings_df['user_id'].astype(int)
-        ratings_df['anime_id'] = ratings_df['anime_id'].astype(int)
+        with open("anime_to_idx.json") as f:
+            anime_to_idx.update({int(k): v for k, v in json.load(f).items()})
 
-        original_user_ids = ratings_df['user_id'].unique()
-        user_to_idx = {user: idx for idx, user in enumerate(original_user_ids)}
-        ratings_df['user_id'] = ratings_df['user_id'].map(user_to_idx)
+        with open("unique_anime_rev.json") as f:
+            unique_anime_rev = json.load(f)
 
-        original_anime_ids = ratings_df['anime_id'].unique()
-        anime_to_idx = {anime: idx for idx, anime in enumerate(original_anime_ids)}
-        ratings_df['anime_id'] = ratings_df['anime_id'].map(anime_to_idx)
-        unique_anime_rev = list(original_anime_ids)
+        with open("anime_genres.json") as f:
+            anime_genres = json.load(f)
 
-        anime_df = pd.read_csv("data/anime.csv")
-        required_columns = ['MAL_ID', 'Genres']
-        for col in required_columns:
-            if col not in anime_df.columns:
-                raise ValueError(f"Column '{col}' not found in anime.csv.")
-        anime_df = anime_df.dropna(subset=required_columns)
-        anime_df['MAL_ID'] = anime_df['MAL_ID'].astype(int)
-
-        for _, row in anime_df.iterrows():
-            anime_genres[row['MAL_ID']] = row['Genres']
-
-        model = MatrixFactorizationModel(len(user_to_idx), len(anime_to_idx)).to(device)
-
-        if os.path.exists("anime_recommender.pth"):
-            print("Loading saved model...")
-            model.load_state_dict(torch.load("anime_recommender.pth", map_location=device))
-            model.eval()
-        else:
-            print("Training model on startup...")
-            model = train_model(
-                ratings_df,
-                num_epochs=19,
-                num_factors=30,
-                learning_rate=0.00098238482170162,
-                weight_decay=1.7546484188145045e-06
-            )
-            torch.save(model.state_dict(), "anime_recommender.pth")
-            print("Model training completed and saved.")
+        model = MatrixFactorizationModel(60690, 9927).to(device)
+        model.load_state_dict(torch.load("anime_recommender.pth", map_location=device))
+        model.eval()
 
     except Exception as e:
-        print("Error during startup training:", e)
+        print("Error during startup:", e)
 
 @app.post("/api/recommendations", response_model=List[RecResponseDTO])
 def get_recommendations(payload: UserAnimeListDTO):
