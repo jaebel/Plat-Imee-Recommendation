@@ -180,3 +180,7 @@ if __name__ == "__main__":
 
 def get_model_resources():
     return model, anime_to_idx, unique_anime_rev, anime_genres
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
