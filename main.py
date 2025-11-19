@@ -181,6 +181,6 @@ if __name__ == "__main__":
 def get_model_resources():
     return model, anime_to_idx, unique_anime_rev, anime_genres
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health():
     return {"status": "ok"}
